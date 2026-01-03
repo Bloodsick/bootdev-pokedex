@@ -15,6 +15,14 @@ type Client struct {
 	httpClient http.Client
 }
 
+type LocationAreaDetail struct {
+	PokemonEncounters []struct {
+		Pokemon struct {
+			Name string `json:"name"`
+		} `json:"pokemon"`
+	} `json:"pokemon_encounters"`
+}
+
 // NewClient -
 func NewClient(timeout, cacheInterval time.Duration) Client {
 	return Client{
@@ -84,4 +92,46 @@ func (c *Client) GetLocationAreas(pageURL *string) (LocationAreaResponse, error)
 	c.cache.Add(url, dat)
 
 	return locationResp, nil
+}
+
+func (c *Client) GetLocationArea(locationAreaName string) (LocationAreaDetail, error) {
+	url := "https://pokeapi.co/api/v2/location-area/" + locationAreaName
+
+	// 1. Check the cache
+	if val, ok := c.cache.Get(url); ok {
+		locationDetail := LocationAreaDetail{}
+		err := json.Unmarshal(val, &locationDetail)
+		if err != nil {
+			return LocationAreaDetail{}, err
+		}
+		return locationDetail, nil
+	}
+
+	// 2. Cache miss
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return LocationAreaDetail{}, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return LocationAreaDetail{}, err
+	}
+	defer resp.Body.Close()
+
+	dat, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return LocationAreaDetail{}, err
+	}
+
+	locationDetail := LocationAreaDetail{}
+	err = json.Unmarshal(dat, &locationDetail)
+	if err != nil {
+		return LocationAreaDetail{}, err
+	}
+
+	// 3. Add to cache
+	c.cache.Add(url, dat)
+
+	return locationDetail, nil
 }

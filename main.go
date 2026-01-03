@@ -99,6 +99,27 @@ func commandHelp(config *Config, args []string) error {
 	return nil
 }
 
+func commandExplore(config *Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("you must provide a location area name")
+	}
+
+	areaName := args[0]
+	fmt.Printf("Exploring %s...\n", areaName)
+
+	locationDetail, err := config.Pokeapi.GetLocationArea(areaName)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Found Pokemon:")
+	for _, encounter := range locationDetail.PokemonEncounters {
+		fmt.Printf(" - %s\n", encounter.Pokemon.Name)
+	}
+
+	return nil
+}
+
 func commandMap(config *Config, args []string) error {
 	var urlToUse *string
 	if config.NextURL != nil {
@@ -149,6 +170,11 @@ func getCommands() map[string]cliCommand {
 			name:        "help",
 			description: "Displays a help message",
 			callback:    commandHelp,
+		},
+		"explore": {
+			name:        "explore <area_name>",
+			description: "List all Pokemon in a given area",
+			callback:    commandExplore,
 		},
 		"map": {
 			name:        "map",
