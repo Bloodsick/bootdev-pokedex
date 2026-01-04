@@ -1,12 +1,15 @@
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chzyer/readline"
 
 	pokeapi "github.com/Bloodisck/bootdev-pokedex/internal/pokeapi"
 )
@@ -16,6 +19,7 @@ type Config struct {
 	PreviousURL   *string
 	Pokeapi       pokeapi.Client
 	CaughtPokemon map[string]pokeapi.Pokemon
+	VisibleAreas  []string
 }
 
 type cliCommand struct {
@@ -28,9 +32,33 @@ func main() {
 	pokeClient := pokeapi.NewClient(5*time.Second, 5*time.Minute)
 	config := &Config{
 		Pokeapi:       pokeClient,
-		CaughtPokemon: make(map[string]pokeapi.Pokemon),
+		CaughtPokemon: loadPokedex(),
 	}
 	startRepl(config)
+}
+
+const saveFilePath = "pokedex_save.json"
+
+func savePokedex(cfg *Config) error {
+	data, err := json.Marshal(cfg.CaughtPokemon)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(saveFilePath, data, 0644)
+}
+
+func loadPokedex() map[string]pokeapi.Pokemon {
+	data, err := os.ReadFile(saveFilePath)
+	if err != nil {
+		return make(map[string]pokeapi.Pokemon)
+	}
+
+	loaded := make(map[string]pokeapi.Pokemon)
+	err = json.Unmarshal(data, &loaded)
+	if err != nil {
+		return make(map[string]pokeapi.Pokemon)
+	}
+	return loaded
 }
 
 func cleanInput(text string) []string {
@@ -39,45 +67,42 @@ func cleanInput(text string) []string {
 	return pokemon
 }
 
-func startRepl(config *Config) {
-	scanner := bufio.NewScanner(os.Stdin)
-
-	fmt.Println("Welcome to the Pokedex REPL!")
+func startRepl(cfg *Config) {
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:      "Pokedex > ",
+		HistoryFile: "/tmp/pokedex_history.tmp",
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer rl.Close()
 
 	for {
-		fmt.Print("Pokedex > ")
-		if !scanner.Scan() {
-			if scanner.Err() != nil {
-				fmt.Printf("Error reading input: %v\n", scanner.Err())
-			} else {
-				fmt.Println("\nGoodbye!")
-			}
+		line, err := rl.Readline()
+		if err != nil {
 			break
 		}
-		userInput := scanner.Text()
 
-		cleanedWords := cleanInput(userInput)
-
-		if len(cleanedWords) == 0 {
+		words := cleanInput(line)
+		if len(words) == 0 {
 			continue
 		}
 
-		commandName := cleanedWords[0]
-		args := cleanedWords[1:]
-		commands := getCommands()
-		if command, exists := commands[commandName]; exists {
-			err := command.callback(config, args)
+		commandName := words[0]
+		args := words[1:]
+
+		command, ok := getCommands()[commandName]
+		if ok {
+			err := command.callback(cfg, args)
 			if err != nil {
-				fmt.Printf("Error executing command '%s': %v\n", commandName, err)
+				fmt.Println(err)
 			}
+			continue
 		} else {
-			fmt.Printf("Unknown command: %s\n", commandName)
-			fmt.Println("Type 'help' for available commands.")
+			fmt.Println("Unknown command")
+			continue
 		}
-
-		fmt.Println()
 	}
-
 }
 
 func commandExit(config *Config, args []string) error {
@@ -86,29 +111,54 @@ func commandExit(config *Config, args []string) error {
 	return nil
 }
 
-func commandHelp(config *Config, args []string) error {
-	commands := getCommands()
-
+func commandHelp(cfg *Config, args []string) error {
 	fmt.Println("Welcome to the Pokedex!")
 	fmt.Println("Usage:")
-	fmt.Println()
+	fmt.Println("")
 
-	for _, cmd := range commands {
-		fmt.Printf("%s: %s\n", cmd.name, cmd.description)
+	order := []string{
+		"help",
+		"map",
+		"mapb",
+		"left",
+		"right",
+		"explore",
+		"catch",
+		"inspect",
+		"pokedex",
+		"exit",
+	}
+
+	availableCommands := getCommands()
+
+	for _, name := range order {
+		if cmd, ok := availableCommands[name]; ok {
+			fmt.Printf("%s: %s\n", cmd.name, cmd.description)
+		}
 	}
 
 	return nil
 }
 
 func commandExplore(config *Config, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("you must provide a location area name")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: explore <name or number>")
 	}
 
-	areaName := args[0]
-	fmt.Printf("Exploring %s...\n", areaName)
+	target := args[0]
 
-	locationDetail, err := config.Pokeapi.GetLocationArea(areaName)
+	if index, err := strconv.Atoi(target); err == nil {
+		realIndex := index - 1
+		if realIndex >= 0 && realIndex < len(config.VisibleAreas) {
+			target = config.VisibleAreas[realIndex]
+		} else {
+			return fmt.Errorf("invalid area number")
+		}
+	}
+
+	fmt.Printf("Exploring %s...\n", target)
+
+	locationDetail, err := config.Pokeapi.GetLocationArea(target)
 	if err != nil {
 		return err
 	}
@@ -121,25 +171,20 @@ func commandExplore(config *Config, args []string) error {
 	return nil
 }
 
-func commandMap(config *Config, args []string) error {
-	var urlToUse *string
-	if config.NextURL != nil {
-		urlToUse = config.NextURL
-	}
-
-	locationResp, err := config.Pokeapi.GetLocationAreas(urlToUse)
+func commandMap(cfg *Config, args []string) error {
+	resp, err := cfg.Pokeapi.GetLocationAreas(cfg.NextURL)
 	if err != nil {
-		return fmt.Errorf("failed to fetch location areas: %v", err)
+		return err
 	}
 
-	config.NextURL = locationResp.Next
-	config.PreviousURL = locationResp.Previous
+	cfg.NextURL = resp.Next
+	cfg.PreviousURL = resp.Previous
 
-	fmt.Println("Location Areas:")
-	for _, area := range locationResp.Results {
-		fmt.Println(area.Name)
+	cfg.VisibleAreas = []string{}
+	for i, area := range resp.Results {
+		cfg.VisibleAreas = append(cfg.VisibleAreas, area.Name)
+		fmt.Printf("%d. %s\n", i+1, area.Name)
 	}
-
 	return nil
 }
 
@@ -165,6 +210,14 @@ func commandMapb(config *Config, args []string) error {
 	return nil
 }
 
+func commandRight(cfg *Config, args []string) error {
+	return commandMap(cfg, args)
+}
+
+func commandLeft(cfg *Config, args []string) error {
+	return commandMapb(cfg, args)
+}
+
 func commandCatch(config *Config, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: catch <pokemon_name>")
@@ -188,6 +241,7 @@ func commandCatch(config *Config, args []string) error {
 	fmt.Println("You may now inspect it with the inspect command.")
 
 	config.CaughtPokemon[name] = pokemon
+	savePokedex(config)
 	return nil
 }
 
@@ -271,6 +325,16 @@ func getCommands() map[string]cliCommand {
 			name:        "mapb",
 			description: "Display previous 20 location areas",
 			callback:    commandMapb,
+		},
+		"left": {
+			name:        "left",
+			description: "Shortcut for mapb (previous areas)",
+			callback:    commandLeft,
+		},
+		"right": {
+			name:        "right",
+			description: "Shortcut for map (next areas)",
+			callback:    commandRight,
 		},
 		"exit": {
 			name:        "exit",
