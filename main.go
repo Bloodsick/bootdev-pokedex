@@ -74,6 +74,7 @@ func loadGame(cfg *Config) {
 	// Initialize defaults
 	cfg.CaughtPokemon = make(map[string]pokeapi.Pokemon)
 	cfg.Party = []*game.BattlePokemon{}
+	cfg.PC = []*game.BattlePokemon{}
 	if cfg.Inventory.EvolutionStones == nil {
 		cfg.Inventory.EvolutionStones = make(map[string]int)
 	}
@@ -236,6 +237,8 @@ func commandHelp(cfg *Config, args []string) error {
 		"battle",
 		"team",
 		"addteam",
+		"deposit",
+		"withdraw",
 		"inspect",
 		"pokedex",
 		"exit",
@@ -359,6 +362,14 @@ func commandCatch(cfg *Config, args []string) error {
 		// If the boolean returned true, it means the catch was successful
 		// We add the base data to our CaughtPokemon (the Pokedex tracker)
 		cfg.CaughtPokemon[name] = wildBase
+		if len(cfg.Party) < 6 {
+			cfg.Party = append(cfg.Party, wildMon)
+			fmt.Println("Added to your party!")
+		} else {
+			cfg.PC = append(cfg.PC, wildMon)
+			fmt.Println("Party full. Transferred to PC Box 1!")
+		}
+		saveGame(cfg)
 
 		// Logic check: StartBattle should have handled appending 'wildMon'
 		// to either cfg.Party or cfg.PC already.
@@ -486,6 +497,76 @@ func commandAddTeam(config *Config, args []string) error {
 
 	fmt.Printf("%s added to your party!\n", name)
 	return saveGame(config) // Good practice to save after modifying team
+}
+
+func commandDeposit(cfg *Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: deposit <pokemon_name>")
+	}
+	name := args[0]
+
+	if len(cfg.Party) <= 1 {
+		return fmt.Errorf("you cannot deposit your last Pokemon!")
+	}
+
+	// Find the index in the Party
+	idx := -1
+	for i, p := range cfg.Party {
+		if p.Nickname == name || p.Base.Name == name {
+			idx = i
+			break
+		}
+	}
+
+	if idx == -1 {
+		return fmt.Errorf("you don't have %s in your party", name)
+	}
+
+	// Move to PC
+	pokemon := cfg.Party[idx]
+	cfg.PC = append(cfg.PC, pokemon)
+
+	// Remove from Party (Slice trick: append everything before + everything after)
+	cfg.Party = append(cfg.Party[:idx], cfg.Party[idx+1:]...)
+
+	fmt.Printf("Stored %s in the PC.\n", pokemon.Nickname)
+	saveGame(cfg)
+	return nil
+}
+
+func commandWithdraw(cfg *Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: withdraw <pokemon_name>")
+	}
+	name := args[0]
+
+	if len(cfg.Party) >= 6 {
+		return fmt.Errorf("your party is full! Deposit someone first.")
+	}
+
+	// Find the index in the PC
+	idx := -1
+	for i, p := range cfg.PC {
+		if p.Nickname == name || p.Base.Name == name {
+			idx = i
+			break
+		}
+	}
+
+	if idx == -1 {
+		return fmt.Errorf("you don't have %s in your PC", name)
+	}
+
+	// Move to Party
+	pokemon := cfg.PC[idx]
+	cfg.Party = append(cfg.Party, pokemon)
+
+	// Remove from PC
+	cfg.PC = append(cfg.PC[:idx], cfg.PC[idx+1:]...)
+
+	fmt.Printf("Withdrew %s from the PC.\n", pokemon.Nickname)
+	saveGame(cfg)
+	return nil
 }
 
 func commandBag(cfg *Config, args []string) error {
@@ -778,6 +859,16 @@ func getCommands() map[string]cliCommand {
 			name:        "addteam",
 			description: "Add a pokemon to your team",
 			callback:    commandAddTeam,
+		},
+		"deposit": {
+			name:        "deposit",
+			description: "Move a Pokemon from your party to storage",
+			callback:    commandDeposit,
+		},
+		"withdraw": {
+			name:        "withdraw",
+			description: "Move a Pokemon from storage to your party",
+			callback:    commandWithdraw,
 		},
 		"bag": {
 			name:        "bag",

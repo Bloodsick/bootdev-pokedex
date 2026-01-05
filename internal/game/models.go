@@ -176,17 +176,20 @@ func (s StatusID) String() string {
 	}
 }
 
-// Update signature to accept 'client'
 func (p *BattlePokemon) Evolve(newBase pokeapi.Pokemon, client pokeapi.Client) {
 	oldMaxHP := p.Stats.MaxHP
+	oldSpeciesName := p.Base.Name // Store the old name (e.g., "charmander")
 
 	// 1. Update Identity
-	p.Base = newBase
-	if p.Nickname == p.Base.Name {
+	// We check against the OLD name to see if it was default
+	if p.Nickname == oldSpeciesName {
 		p.Nickname = newBase.Name
 	}
 
-	// 2. Recalculate Stats (uses new Base Stats, keeps current Level)
+	// NOW we update the base to the new species
+	p.Base = newBase
+
+	// 2. Recalculate Stats
 	p.RecalculateStats()
 
 	// 3. Scale HP proportionally
@@ -197,16 +200,12 @@ func (p *BattlePokemon) Evolve(newBase pokeapi.Pokemon, client pokeapi.Client) {
 		p.Stats.HP = 1
 	}
 
-	// 4. Learn a New Move from the API
+	// 4. Learn a New Move
 	if len(newBase.Moves) > 0 {
-		// Pick a random move from the new Pokemon's allowed list
 		randomIndex := rand.Intn(len(newBase.Moves))
 		moveName := newBase.Moves[randomIndex].Move.Name
-
-		// Fetch details using the Client
 		apiMove, err := client.GetMove(moveName)
 		if err == nil {
-			// Convert to Game Move
 			newMove := Move{
 				Name:      apiMove.Name,
 				Type:      apiMove.Type.Name,
@@ -216,18 +215,15 @@ func (p *BattlePokemon) Evolve(newBase pokeapi.Pokemon, client pokeapi.Client) {
 				CurrentPP: apiMove.PP,
 			}
 
-			// Add or Replace Logic
-			// Check if we already have it
 			hasMove := false
 			for _, m := range p.Moves {
 				if m.Name == newMove.Name {
 					hasMove = true
 				}
 			}
-
 			if !hasMove {
 				if len(p.Moves) >= 4 {
-					p.Moves[0] = newMove // Replace first move
+					p.Moves[0] = newMove
 				} else {
 					p.Moves = append(p.Moves, newMove)
 				}
