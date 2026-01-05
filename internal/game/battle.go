@@ -6,10 +6,12 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+
+	"github.com/Bloodisck/bootdev-pokedex/internal/pokeapi"
 )
 
 // StartBattle is the main entry point
-func StartBattle(party []*BattlePokemon, wildPokemon *BattlePokemon, inventory *PlayerInventory) bool {
+func StartBattle(party []*BattlePokemon, wildPokemon *BattlePokemon, inventory *PlayerInventory, client pokeapi.Client) bool {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// Get first alive pokemon
@@ -79,7 +81,7 @@ func StartBattle(party []*BattlePokemon, wildPokemon *BattlePokemon, inventory *
 		if wildPokemon.Stats.HP > 0 {
 			// Simple AI: Random move
 			move := wildPokemon.Moves[rand.Intn(len(wildPokemon.Moves))]
-			performMove(wildPokemon, activeMon, move)
+			performMove(wildPokemon, activeMon, &move)
 
 			if activeMon.Stats.HP <= 0 {
 				activeMon.Stats.HP = 0
@@ -101,13 +103,13 @@ func StartBattle(party []*BattlePokemon, wildPokemon *BattlePokemon, inventory *
 			inventory.Money += goldReward
 			fmt.Printf("You received ₽%d for winning!\n", goldReward)
 
-			distributeXP(activeMon, wildPokemon)
+			distributeXP(activeMon, wildPokemon, client)
 			return true // Win
 		}
 	}
 }
 
-func performMove(attacker, defender *BattlePokemon, move Move) {
+func performMove(attacker, defender *BattlePokemon, move *Move) {
 	fmt.Printf("%s used %s!\n", attacker.Nickname, move.Name)
 
 	// Accuracy Check
@@ -186,11 +188,12 @@ func handleBagMenu(scanner *bufio.Scanner, inv *PlayerInventory, wild *BattlePok
 		}
 
 		// Deduct item
-		if ballChoice == "1" {
+		switch ballChoice {
+		case "1":
 			inv.Pokeballs--
-		} else if ballChoice == "2" {
+		case "2":
 			inv.Greatballs--
-		} else {
+		default:
 			inv.Ultraballs--
 		}
 
@@ -269,7 +272,7 @@ func handleBagMenu(scanner *bufio.Scanner, inv *PlayerInventory, wild *BattlePok
 	return false, false
 }
 
-func distributeXP(winner, loser *BattlePokemon) {
+func distributeXP(winner *BattlePokemon, loser *BattlePokemon, client pokeapi.Client) {
 	xpGain := (loser.Base.BaseExperience * loser.Level) / 7
 	winner.XP += xpGain
 	fmt.Printf("%s gained %d XP!\n", winner.Nickname, xpGain)
@@ -281,12 +284,46 @@ func distributeXP(winner, loser *BattlePokemon) {
 		winner.RecalculateStats()
 		fmt.Printf("%s grew to Level %d!\n", winner.Nickname, winner.Level)
 
-		// Simple Evolution Check (Example)
-		if winner.Level >= 16 && winner.Base.Name == "charmander" {
-			fmt.Println("What? Charmander is evolving!")
-			winner.Nickname = "Charmeleon" // In real app, fetch new base data
-			// winner.Base = FetchPokemon("charmeleon")
+		// 2. GENERIC EVOLUTION CHECK
+		// Instead of "if charmander...", we ask the generic helper:
+		handleLevelUpEvolution(winner, client)
+	}
+}
+
+func handleLevelUpEvolution(p *BattlePokemon, client pokeapi.Client) {
+	// A. Get Species to find the Chain URL
+	species, err := client.GetPokemonSpecies(p.Base.Name)
+	if err != nil {
+		return // API error, skip evolution silently
+	}
+
+	// B. Get the Chain
+	chainData, err := client.GetEvolutionChain(species.EvolutionChain.URL)
+	if err != nil {
+		return
+	}
+
+	// C. Check if we should evolve
+	// (Reuse the 'findNextEvolution' helper we wrote for the command)
+	nextStageName, minLevel, itemReq := FindNextEvolution(chainData.Chain, p.Base.Name)
+
+	// D. Auto-Evolve Conditions:
+	// 1. Next stage exists
+	// 2. We meet the level requirement
+	// 3. NO item is required (Items usually require manual trigger)
+	if nextStageName != "" && p.Level >= minLevel && itemReq == "" {
+		fmt.Printf("\n...Wait! %s is evolving!\n", p.Nickname)
+
+		// Fetch new form
+		newBase, err := client.GetPokemon(nextStageName)
+		if err != nil {
+			fmt.Println("Evolution failed due to connection error.")
+			return
 		}
+
+		// Execute Evolution
+		p.Evolve(newBase, client)
+		fmt.Printf("Congratulations! Your %s evolved into %s!\n", p.Base.Name, newBase.Name)
 	}
 }
 
@@ -298,13 +335,13 @@ func handleFightMenu(scanner *bufio.Scanner, active *BattlePokemon, enemy *Battl
 	scanner.Scan()
 	idx, _ := strconv.Atoi(scanner.Text())
 	if idx > 0 && idx <= len(active.Moves) {
-		performMove(active, enemy, active.Moves[idx-1])
+		performMove(active, enemy, &active.Moves[idx-1])
 		return true
 	}
 	return false
 }
 
-func forceSwitch(scanner *bufio.Scanner, party []*BattlePokemon, active **BattlePokemon) bool {
+func forceSwitch(_ *bufio.Scanner, party []*BattlePokemon, active **BattlePokemon) bool {
 	// Loop through party to find replacement
 	for _, p := range party {
 		if p.Stats.HP > 0 {

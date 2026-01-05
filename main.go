@@ -74,6 +74,9 @@ func loadGame(cfg *Config) {
 	// Initialize defaults
 	cfg.CaughtPokemon = make(map[string]pokeapi.Pokemon)
 	cfg.Party = []*game.BattlePokemon{}
+	if cfg.Inventory.EvolutionStones == nil {
+		cfg.Inventory.EvolutionStones = make(map[string]int)
+	}
 	cfg.Inventory = game.PlayerInventory{
 		Pokeballs: 20,
 		Potions:   10,
@@ -148,7 +151,10 @@ func runNewGameSequence(cfg *Config) {
 	}
 
 	// Create the Battle instance (Starting at Level 5)
-	starter := game.NewBattlePokemon(pokemonBase, 5)
+	starter, err := game.NewBattlePokemon(pokemonBase, 5, cfg.Pokeapi)
+	if err != nil {
+		fmt.Printf("Error generating pokemon: %v\n", err)
+	}
 
 	cfg.Party = append(cfg.Party, starter)
 	cfg.CaughtPokemon[choice] = pokemonBase // Add to Pokedex too
@@ -223,6 +229,9 @@ func commandHelp(cfg *Config, args []string) error {
 		"right",
 		"explore",
 		"bag",
+		"heal",
+		"evolve",
+		"shop",
 		"catch",
 		"battle",
 		"team",
@@ -334,14 +343,17 @@ func commandCatch(cfg *Config, args []string) error {
 	}
 
 	// 2. Create Wild Instance (Random level 1-10)
-	wildMon := game.NewBattlePokemon(wildBase, rand.Intn(10)+1)
+	wildMon, err := game.NewBattlePokemon(wildBase, rand.Intn(5)+1, cfg.Pokeapi)
+	if err != nil {
+		return fmt.Errorf("failed to create pokemon: %w", err)
+	}
 
 	fmt.Printf("A wild %s appeared!\n", wildBase.Name)
 
 	// 3. Start Battle Loop
 	// We pass the party, the wild mon, and the inventory
 	// We also pass the PC so the battle engine can add the pokemon there if the party is full
-	caught := game.StartBattle(cfg.Party, wildMon, &cfg.Inventory)
+	caught := game.StartBattle(cfg.Party, wildMon, &cfg.Inventory, cfg.Pokeapi)
 
 	if caught {
 		// If the boolean returned true, it means the catch was successful
@@ -361,34 +373,74 @@ func commandCatch(cfg *Config, args []string) error {
 	return nil
 }
 
-func commandInspect(config *Config, args []string) error {
+func commandInspect(cfg *Config, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: inspect <pokemon_name>")
 	}
-
 	name := args[0]
 
-	pokemon, ok := config.CaughtPokemon[name]
-	if !ok {
-		fmt.Println("you have not caught that pokemon")
-		return nil
+	// 1. Check Party (Active Team) - SHOWS PROGRESS
+	for _, p := range cfg.Party {
+		if p.Base.Name == name || p.Nickname == name {
+			printBattlePokemonDetails(p, "Party")
+			return nil
+		}
 	}
 
-	fmt.Printf("Name: %s\n", pokemon.Name)
+	// 2. Check PC (Storage) - SHOWS PROGRESS
+	// (Assumes you have a PC slice in your config)
+	for _, p := range cfg.PC {
+		if p.Base.Name == name || p.Nickname == name {
+			printBattlePokemonDetails(p, "PC Storage")
+			return nil
+		}
+	}
+
+	// 3. Fallback: Pokedex Data (Generic Species Info)
+	pokemon, ok := cfg.CaughtPokemon[name]
+	if !ok {
+		return fmt.Errorf("you have not caught that pokemon")
+	}
+
+	fmt.Printf("--- Pokedex Entry: %s ---\n", pokemon.Name)
 	fmt.Printf("Height: %d\n", pokemon.Height)
 	fmt.Printf("Weight: %d\n", pokemon.Weight)
+	// Added Base Experience info here
+	fmt.Printf("Base XP Yield: %d\n", pokemon.BaseExperience)
 
-	fmt.Println("Stats:")
+	fmt.Println("Base Stats:")
 	for _, stat := range pokemon.Stats {
-		fmt.Printf("  -%s: %d\n", stat.Stat.Name, stat.BaseStat)
+		fmt.Printf("  -%s: %v\n", stat.Stat.Name, stat.BaseStat)
 	}
-
 	fmt.Println("Types:")
 	for _, typeInfo := range pokemon.Types {
 		fmt.Printf("  - %s\n", typeInfo.Type.Name)
 	}
 
 	return nil
+}
+
+// Helper function to print the detailed "RPG Style" view
+func printBattlePokemonDetails(p *game.BattlePokemon, location string) {
+	fmt.Printf("--- Inspected: %s (%s) ---\n", p.Nickname, location)
+	fmt.Printf("Lvl: %d\n", p.Level)
+	fmt.Printf("HP:  %d/%d\n", p.Stats.HP, p.Stats.MaxHP)
+
+	// HERE IS THE XP INDICATION YOU WANTED
+	fmt.Printf("XP:  %d / %d\n", p.XP, p.NextLevelXP)
+
+	fmt.Printf("Status: %s\n", p.Status)
+	fmt.Printf("Nature: %s\n", p.Nature)
+
+	fmt.Println("Stats:")
+	fmt.Printf("  -Attack:  %d\n", p.Stats.Attack)
+	fmt.Printf("  -Defense: %d\n", p.Stats.Defense)
+	fmt.Printf("  -Speed:   %d\n", p.Stats.Speed)
+
+	fmt.Println("Moves:")
+	for _, m := range p.Moves {
+		fmt.Printf("  - %s (%s) Pwr:%d PP:%d/%d\n", m.Name, m.Type, m.Power, m.CurrentPP, m.MaxPP)
+	}
 }
 
 func commandTeam(cfg *Config, args []string) error {
@@ -423,11 +475,17 @@ func commandAddTeam(config *Config, args []string) error {
 		return fmt.Errorf("your party is full")
 	}
 
-	newMember := game.NewBattlePokemon(baseData, 5)
+	// Fix: Use 'baseData', pass 'config.Pokeapi', and handle the error
+	// We default to level 5 for team additions from the box, or you could track level in CaughtPokemon later
+	newMember, err := game.NewBattlePokemon(baseData, 5, config.Pokeapi)
+	if err != nil {
+		return fmt.Errorf("failed to create team member: %w", err)
+	}
+
 	config.Party = append(config.Party, newMember)
 
 	fmt.Printf("%s added to your party!\n", name)
-	return nil
+	return saveGame(config) // Good practice to save after modifying team
 }
 
 func commandBag(cfg *Config, args []string) error {
@@ -437,15 +495,135 @@ func commandBag(cfg *Config, args []string) error {
 	return nil
 }
 
+func commandHeal(cfg *Config, args []string) error {
+	if len(cfg.Party) == 0 {
+		return fmt.Errorf("you have no Pokemon to heal")
+	}
+
+	fmt.Println("Welcome to the Pokemon Center!")
+	fmt.Println("Healing your team... Please wait...")
+
+	time.Sleep(1 * time.Second)
+
+	for _, p := range cfg.Party {
+		p.HealFull() // This uses the helper we added in internal/game/models.go
+	}
+
+	fmt.Println("Your Pokemon are fighting fit! We hope to see you again!")
+
+	// Save the game so their HP stays full if they quit
+	return saveGame(cfg)
+}
+
+func commandEvolve(cfg *Config, args []string) error {
+	if len(cfg.Party) == 0 {
+		return fmt.Errorf("you have no Pokemon in your party")
+	}
+
+	// 1. Select Pokemon
+	fmt.Println("--- Evolution Chamber ---")
+	for i, p := range cfg.Party {
+		fmt.Printf("%d. %s (Lvl %d)\n", i+1, p.Nickname, p.Level)
+	}
+	fmt.Println("c. Cancel")
+
+	reader := bufio.NewScanner(os.Stdin)
+	fmt.Print("Select Pokemon to evolve > ")
+	reader.Scan()
+	choice := reader.Text()
+
+	if choice == "c" {
+		return nil
+	}
+	idx, err := strconv.Atoi(choice)
+	if err != nil || idx < 1 || idx > len(cfg.Party) {
+		return fmt.Errorf("invalid selection")
+	}
+
+	selectedMon := cfg.Party[idx-1]
+	fmt.Printf("Checking genetics for %s...\n", selectedMon.Nickname)
+
+	// 2. FETCH EVOLUTION DATA (Replaces the Registry lookup)
+	// A. Get Species to find the Chain URL
+	species, err := cfg.Pokeapi.GetPokemonSpecies(selectedMon.Base.Name)
+	if err != nil {
+		return fmt.Errorf("cannot find species data: %w", err)
+	}
+
+	// B. Get the actual Chain
+	chainData, err := cfg.Pokeapi.GetEvolutionChain(species.EvolutionChain.URL)
+	if err != nil {
+		return fmt.Errorf("cannot find evolution chain: %w", err)
+	}
+
+	// C. Find the next stage using a helper function
+	nextStageName, minLevel, itemReq := game.FindNextEvolution(chainData.Chain, selectedMon.Base.Name)
+
+	if nextStageName == "" {
+		fmt.Printf("%s cannot evolve any further.\n", selectedMon.Nickname)
+		return nil
+	}
+
+	// 3. CHECK REQUIREMENTS
+	// Check Level
+	if minLevel > 0 && selectedMon.Level < minLevel {
+		fmt.Printf("%s needs to be at least level %d to evolve into %s.\n", selectedMon.Nickname, minLevel, nextStageName)
+		return nil
+	}
+
+	// Check Item (if required)
+	if itemReq != "" {
+		count := cfg.Inventory.EvolutionStones[itemReq]
+		if count <= 0 {
+			fmt.Printf("You need a %s to evolve into %s.\n", itemReq, nextStageName)
+			return nil
+		}
+
+		fmt.Printf("Evolution requires 1x %s. ", itemReq)
+	}
+
+	// 4. CONFIRMATION
+	fmt.Printf("Evolve %s into %s? (y/n): ", selectedMon.Nickname, nextStageName)
+	reader.Scan()
+	if reader.Text() != "y" {
+		fmt.Println("Evolution cancelled.")
+		return nil
+	}
+
+	// 5. EXECUTE EVOLUTION
+	fmt.Println("...")
+	fmt.Println("What? " + selectedMon.Nickname + " is evolving!")
+
+	// Fetch new base stats
+	newBase, err := cfg.Pokeapi.GetPokemon(nextStageName)
+	if err != nil {
+		return fmt.Errorf("failed to fetch new form data: %w", err)
+	}
+
+	// Consume Item if used
+	if itemReq != "" {
+		cfg.Inventory.EvolutionStones[itemReq]--
+	}
+
+	// Pass the API client so it can fetch a new move!
+	selectedMon.Evolve(newBase, cfg.Pokeapi)
+
+	fmt.Printf("Congratulations! Your Pokemon evolved into %s!\n", selectedMon.Nickname)
+	saveGame(cfg)
+	return nil
+}
+
 func commandShop(cfg *Config, args []string) error {
 	shopItems := map[string]int{
-		"pokeball":        10,
-		"greatball":       100,
-		"ultraball":       500,
-		"potion":          300,
-		"superpotion":     700,
-		"revive":          500,
-		"evolution-stone": 500,
+		"pokeball":    10,
+		"greatball":   100,
+		"ultraball":   500,
+		"potion":      300,
+		"superpotion": 700,
+		"revive":      500,
+		"fire-stone":  700,
+		"water-stone": 700,
+		"leaf-stone":  700,
 	}
 
 	if len(args) == 0 {
@@ -481,6 +659,11 @@ func commandShop(cfg *Config, args []string) error {
 			cfg.Inventory.Potions++
 		case "superpotion":
 			cfg.Inventory.SuperPotions++
+		case "fire-stone", "water-stone", "leaf-stone":
+			if cfg.Inventory.EvolutionStones == nil {
+				cfg.Inventory.EvolutionStones = make(map[string]int)
+			}
+			cfg.Inventory.EvolutionStones[itemName]++
 		}
 
 		fmt.Printf("Purchased %s! New balance: ₽%d\n", itemName, cfg.Inventory.Money)
@@ -508,9 +691,16 @@ func commandBattle(config *Config, args []string) error {
 	}
 
 	enemyLevel := rand.Intn(5) + 1
-	wildPokemon := game.NewBattlePokemon(enemyBase, enemyLevel)
 
-	game.StartBattle(config.Party, wildPokemon, &config.Inventory)
+	// Fix: Pass config.Pokeapi and handle the error return
+	wildPokemon, err := game.NewBattlePokemon(enemyBase, enemyLevel, config.Pokeapi)
+	if err != nil {
+		return fmt.Errorf("failed to prepare battle: %w", err)
+	}
+
+	// Start the battle
+	game.StartBattle(config.Party, wildPokemon, &config.Inventory, config.Pokeapi)
+
 	saveGame(config)
 	return nil
 }
@@ -590,6 +780,21 @@ func getCommands() map[string]cliCommand {
 			name:        "bag",
 			description: "Shows your items in your bag",
 			callback:    commandBag,
+		},
+		"heal": {
+			name:        "heal",
+			description: "Heals your pokemon in a poke-center",
+			callback:    commandHeal,
+		},
+		"evolve": {
+			name:        "evolve",
+			description: "Evolves your pokemon using stones",
+			callback:    commandEvolve,
+		},
+		"shop": {
+			name:        "shop",
+			description: "Opens the shop",
+			callback:    commandShop,
 		},
 		"battle": {
 			name:        "battle",

@@ -1,6 +1,10 @@
 package game
 
-import "github.com/Bloodisck/bootdev-pokedex/internal/pokeapi"
+import (
+	"math/rand"
+
+	"github.com/Bloodisck/bootdev-pokedex/internal/pokeapi"
+)
 
 // Status constants
 type StatusID int
@@ -46,6 +50,12 @@ type BattlePokemon struct {
 	Nature      string // e.g., "Adamant" (+Atk, -SpAtk)
 }
 
+type EvolutionRequirement struct {
+	NextStage     string // The species name to evolve into
+	RequiredLevel int    // Minimum level
+	RequiredStone string // The specific stone name (e.g., "fire-stone")
+}
+
 // PlayerInventory holds items
 type PlayerInventory struct {
 	Money           int
@@ -58,22 +68,51 @@ type PlayerInventory struct {
 	EvolutionStones map[string]int
 }
 
-// NewBattlePokemon creates a fresh pokemon and calculates initial stats
-func NewBattlePokemon(base pokeapi.Pokemon, level int) *BattlePokemon {
+// In internal/game/models.go
+
+// Update signature to accept Client
+func NewBattlePokemon(base pokeapi.Pokemon, level int, client pokeapi.Client) (*BattlePokemon, error) {
 	bp := &BattlePokemon{
 		Base:     base,
 		Nickname: base.Name,
 		Level:    level,
 		XP:       0,
 		Status:   StatusNone,
-		Nature:   "Neutral", // Simplified for now
+		Stats:    Stats{},
 	}
 
-	bp.NextLevelXP = level * level * 10 // Simple parabolic curve
-	bp.GenerateMoves()
+	bp.NextLevelXP = level * level * 10
 	bp.RecalculateStats()
-	bp.Stats.HP = bp.Stats.MaxHP // Full heal on creation
-	return bp
+	bp.Stats.HP = bp.Stats.MaxHP
+
+	// 1. Pick a random move from the list of possible moves
+	if len(base.Moves) > 0 {
+		// Simple logic: Pick a random one.
+		randIdx := rand.Intn(len(base.Moves))
+		moveName := base.Moves[randIdx].Move.Name
+
+		// 2. Fetch the details
+		apiMove, err := client.GetMove(moveName)
+		if err == nil {
+			// Convert API Move to Game Move
+			gameMove := Move{
+				Name:      apiMove.Name,
+				Type:      apiMove.Type.Name,
+				Power:     apiMove.Power,
+				Accuracy:  apiMove.Accuracy,
+				MaxPP:     apiMove.PP,
+				CurrentPP: apiMove.PP,
+			}
+			bp.Moves = append(bp.Moves, gameMove)
+		}
+	}
+
+	// Fallback if API failed or no moves found
+	if len(bp.Moves) == 0 {
+		bp.Moves = []Move{{Name: "Tackle", Type: "normal", Power: 40, MaxPP: 35, CurrentPP: 35}}
+	}
+
+	return bp, nil
 }
 
 func (p *BattlePokemon) RecalculateStats() {
@@ -134,5 +173,65 @@ func (s StatusID) String() string {
 		return "FNT"
 	default:
 		return "???"
+	}
+}
+
+// Update signature to accept 'client'
+func (p *BattlePokemon) Evolve(newBase pokeapi.Pokemon, client pokeapi.Client) {
+	oldMaxHP := p.Stats.MaxHP
+
+	// 1. Update Identity
+	p.Base = newBase
+	if p.Nickname == p.Base.Name {
+		p.Nickname = newBase.Name
+	}
+
+	// 2. Recalculate Stats (uses new Base Stats, keeps current Level)
+	p.RecalculateStats()
+
+	// 3. Scale HP proportionally
+	hpPercent := float64(p.Stats.HP) / float64(oldMaxHP)
+	p.Stats.HP = int(hpPercent * float64(p.Stats.MaxHP))
+
+	if p.Stats.HP < 1 && p.Status != StatusFainted {
+		p.Stats.HP = 1
+	}
+
+	// 4. Learn a New Move from the API
+	if len(newBase.Moves) > 0 {
+		// Pick a random move from the new Pokemon's allowed list
+		randomIndex := rand.Intn(len(newBase.Moves))
+		moveName := newBase.Moves[randomIndex].Move.Name
+
+		// Fetch details using the Client
+		apiMove, err := client.GetMove(moveName)
+		if err == nil {
+			// Convert to Game Move
+			newMove := Move{
+				Name:      apiMove.Name,
+				Type:      apiMove.Type.Name,
+				Power:     apiMove.Power,
+				Accuracy:  apiMove.Accuracy,
+				MaxPP:     apiMove.PP,
+				CurrentPP: apiMove.PP,
+			}
+
+			// Add or Replace Logic
+			// Check if we already have it
+			hasMove := false
+			for _, m := range p.Moves {
+				if m.Name == newMove.Name {
+					hasMove = true
+				}
+			}
+
+			if !hasMove {
+				if len(p.Moves) >= 4 {
+					p.Moves[0] = newMove // Replace first move
+				} else {
+					p.Moves = append(p.Moves, newMove)
+				}
+			}
+		}
 	}
 }

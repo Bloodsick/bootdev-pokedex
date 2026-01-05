@@ -53,6 +53,50 @@ type Pokemon struct {
 			Name string `json:"name"`
 		} `json:"type"`
 	} `json:"types"`
+	Moves []struct {
+		Move struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"move"`
+	} `json:"moves"`
+}
+
+type Move struct {
+	Name     string `json:"name"`
+	Accuracy int    `json:"accuracy"`
+	Power    int    `json:"power"`
+	PP       int    `json:"pp"`
+	Type     struct {
+		Name string `json:"name"`
+	} `json:"type"`
+}
+
+type PokemonSpecies struct {
+	EvolutionChain struct {
+		URL string `json:"url"`
+	} `json:"evolution_chain"`
+}
+
+type EvolutionChainResponse struct {
+	Chain ChainLink `json:"chain"`
+}
+
+type ChainLink struct {
+	Species struct {
+		Name string `json:"name"`
+	} `json:"species"`
+	EvolutionDetails []EvolutionDetail `json:"evolution_details"`
+	EvolvesTo        []ChainLink       `json:"evolves_to"`
+}
+
+type EvolutionDetail struct {
+	MinLevel *int `json:"min_level"`
+	Item     *struct {
+		Name string `json:"name"`
+	} `json:"item"`
+	Trigger struct {
+		Name string `json:"name"`
+	} `json:"trigger"`
 }
 
 // NewClient -
@@ -191,4 +235,119 @@ func (c *Client) GetPokemon(pokemonName string) (Pokemon, error) {
 	c.cache.Add(url, dat)
 
 	return pokemonResp, nil
+}
+
+func (c *Client) GetPokemonSpecies(name string) (PokemonSpecies, error) {
+	url := "https://pokeapi.co/api/v2/pokemon-species/" + name
+
+	if val, ok := c.cache.Get(url); ok {
+		speciesResp := PokemonSpecies{}
+		err := json.Unmarshal(val, &speciesResp)
+		if err != nil {
+			return PokemonSpecies{}, err
+		}
+		return speciesResp, nil
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return PokemonSpecies{}, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return PokemonSpecies{}, err
+	}
+	defer resp.Body.Close()
+
+	dat, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return PokemonSpecies{}, err
+	}
+
+	speciesResp := PokemonSpecies{}
+	err = json.Unmarshal(dat, &speciesResp)
+	if err != nil {
+		return PokemonSpecies{}, err
+	}
+
+	c.cache.Add(url, dat)
+	return speciesResp, nil
+}
+
+func (c *Client) GetEvolutionChain(url string) (EvolutionChainResponse, error) {
+	// 1. Check Cache
+	if val, ok := c.cache.Get(url); ok {
+		chainResp := EvolutionChainResponse{}
+		err := json.Unmarshal(val, &chainResp)
+		if err != nil {
+			return EvolutionChainResponse{}, err
+		}
+		return chainResp, nil
+	}
+
+	// 2. Request
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return EvolutionChainResponse{}, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return EvolutionChainResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	dat, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return EvolutionChainResponse{}, err
+	}
+
+	chainResp := EvolutionChainResponse{}
+	err = json.Unmarshal(dat, &chainResp)
+	if err != nil {
+		return EvolutionChainResponse{}, err
+	}
+
+	// 3. Add to Cache
+	c.cache.Add(url, dat)
+	return chainResp, nil
+}
+
+func (c *Client) GetMove(name string) (Move, error) {
+	url := "https://pokeapi.co/api/v2/move/" + name
+
+	if val, ok := c.cache.Get(url); ok {
+		moveResp := Move{}
+		err := json.Unmarshal(val, &moveResp)
+		if err != nil {
+			return Move{}, err
+		}
+		return moveResp, nil
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return Move{}, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return Move{}, err
+	}
+	defer resp.Body.Close()
+
+	dat, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Move{}, err
+	}
+
+	moveResp := Move{}
+	err = json.Unmarshal(dat, &moveResp)
+	if err != nil {
+		return Move{}, err
+	}
+
+	c.cache.Add(url, dat)
+	return moveResp, nil
 }
