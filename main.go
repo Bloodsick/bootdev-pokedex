@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/chzyer/readline"
 
+	"github.com/Bloodisck/bootdev-pokedex/internal/game"
 	pokeapi "github.com/Bloodisck/bootdev-pokedex/internal/pokeapi"
 )
 
@@ -20,6 +22,9 @@ type Config struct {
 	Pokeapi       pokeapi.Client
 	CaughtPokemon map[string]pokeapi.Pokemon
 	VisibleAreas  []string
+	Party         []*game.BattlePokemon
+	PC            []*game.BattlePokemon
+	Inventory     game.PlayerInventory
 }
 
 type cliCommand struct {
@@ -30,35 +35,129 @@ type cliCommand struct {
 
 func main() {
 	pokeClient := pokeapi.NewClient(5*time.Second, 5*time.Minute)
-	config := &Config{
-		Pokeapi:       pokeClient,
-		CaughtPokemon: loadPokedex(),
+
+	cfg := &Config{
+		Pokeapi: pokeClient,
 	}
-	startRepl(config)
+
+	loadGame(cfg)
+
+	startRepl(cfg)
 }
 
-const saveFilePath = "pokedex_save.json"
+const saveFilePath = "savegame.json"
 
-func savePokedex(cfg *Config) error {
-	data, err := json.Marshal(cfg.CaughtPokemon)
+func saveGame(cfg *Config) error {
+	// We create a temporary struct to hold EVERYTHING we want to save
+	type SaveData struct {
+		CaughtPokemon map[string]pokeapi.Pokemon `json:"caught_pokemon"`
+		Party         []*game.BattlePokemon      `json:"party"`
+		PC            []*game.BattlePokemon      `json:"pc"`
+		Inventory     game.PlayerInventory       `json:"inventory"`
+	}
+
+	data := SaveData{
+		CaughtPokemon: cfg.CaughtPokemon,
+		Party:         cfg.Party,
+		PC:            cfg.PC,
+		Inventory:     cfg.Inventory,
+	}
+
+	fileData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(saveFilePath, data, 0644)
+	return os.WriteFile(saveFilePath, fileData, 0644)
 }
 
-func loadPokedex() map[string]pokeapi.Pokemon {
-	data, err := os.ReadFile(saveFilePath)
-	if err != nil {
-		return make(map[string]pokeapi.Pokemon)
+func loadGame(cfg *Config) {
+	// Initialize defaults
+	cfg.CaughtPokemon = make(map[string]pokeapi.Pokemon)
+	cfg.Party = []*game.BattlePokemon{}
+	cfg.Inventory = game.PlayerInventory{
+		Pokeballs: 20,
+		Potions:   10,
 	}
 
-	loaded := make(map[string]pokeapi.Pokemon)
-	err = json.Unmarshal(data, &loaded)
+	fileData, err := os.ReadFile(saveFilePath)
 	if err != nil {
-		return make(map[string]pokeapi.Pokemon)
+		if os.IsNotExist(err) {
+			// NEW GAME SEQUENCE
+			runNewGameSequence(cfg)
+			return
+		}
+		return
 	}
-	return loaded
+
+	// 3. Decode the JSON
+	type SaveData struct {
+		CaughtPokemon map[string]pokeapi.Pokemon `json:"caught_pokemon"`
+		Party         []*game.BattlePokemon      `json:"party"`
+		PC            []*game.BattlePokemon      `json:"pc"`
+		Inventory     game.PlayerInventory       `json:"inventory"`
+	}
+
+	var loadedData SaveData
+	err = json.Unmarshal(fileData, &loadedData)
+	if err != nil {
+		fmt.Println("Error loading save file (it might be corrupted or old). Starting new game.")
+		return
+	}
+
+	// 4. Load data into config
+	cfg.CaughtPokemon = loadedData.CaughtPokemon
+	cfg.Party = loadedData.Party
+	cfg.PC = loadedData.PC
+	cfg.Inventory = loadedData.Inventory
+}
+
+func runNewGameSequence(cfg *Config) {
+	reader := bufio.NewScanner(os.Stdin)
+	fmt.Println("Welcome to the world of Pokémon!")
+	fmt.Println("It looks like you're new here. Please choose your starter:")
+	fmt.Println("1. Charmander")
+	fmt.Println("2. Bulbasaur")
+	fmt.Println("3. Squirtle")
+
+	starters := map[string]string{
+		"1": "charmander",
+		"2": "bulbasaur",
+		"3": "squirtle",
+	}
+
+	var choice string
+	for {
+		fmt.Print("Enter number (1-3): ")
+		reader.Scan()
+		input := reader.Text()
+
+		if name, ok := starters[input]; ok {
+			choice = name
+			break
+		}
+		fmt.Println("Invalid choice. Please pick 1, 2, or 3.")
+	}
+
+	fmt.Printf("Fetching data for %s...\n", choice)
+
+	// Fetch the base data from API
+	pokemonBase, err := cfg.Pokeapi.GetPokemon(choice)
+	if err != nil {
+		fmt.Printf("Error starting game: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create the Battle instance (Starting at Level 5)
+	starter := game.NewBattlePokemon(pokemonBase, 5)
+
+	cfg.Party = append(cfg.Party, starter)
+	cfg.CaughtPokemon[choice] = pokemonBase // Add to Pokedex too
+
+	fmt.Printf("\nGreat choice! %s has joined your team.\n", choice)
+	fmt.Println("Use the 'map' command to find areas and 'catch' to start a battle!")
+
+	// Initial save so they don't have to pick again if they crash
+	saveGame(cfg)
 }
 
 func cleanInput(text string) []string {
@@ -123,7 +222,11 @@ func commandHelp(cfg *Config, args []string) error {
 		"left",
 		"right",
 		"explore",
+		"bag",
 		"catch",
+		"battle",
+		"team",
+		"addteam",
 		"inspect",
 		"pokedex",
 		"exit",
@@ -218,30 +321,43 @@ func commandLeft(cfg *Config, args []string) error {
 	return commandMapb(cfg, args)
 }
 
-func commandCatch(config *Config, args []string) error {
+func commandCatch(cfg *Config, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: catch <pokemon_name>")
+		return fmt.Errorf("usage: encounter <pokemon_name>")
 	}
 
+	// 1. Fetch wild pokemon data
 	name := args[0]
-	pokemon, err := config.Pokeapi.GetPokemon(name)
+	wildBase, err := cfg.Pokeapi.GetPokemon(name)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Throwing a Pokeball at %s...\n", pokemon.Name)
+	// 2. Create Wild Instance (Random level 1-10)
+	wildMon := game.NewBattlePokemon(wildBase, rand.Intn(10)+1)
 
-	res := rand.Intn(pokemon.BaseExperience)
-	if res > 40 {
-		fmt.Printf("%s escaped!\n", pokemon.Name)
-		return nil
+	fmt.Printf("A wild %s appeared!\n", wildBase.Name)
+
+	// 3. Start Battle Loop
+	// We pass the party, the wild mon, and the inventory
+	// We also pass the PC so the battle engine can add the pokemon there if the party is full
+	caught := game.StartBattle(cfg.Party, wildMon, &cfg.Inventory)
+
+	if caught {
+		// If the boolean returned true, it means the catch was successful
+		// We add the base data to our CaughtPokemon (the Pokedex tracker)
+		cfg.CaughtPokemon[name] = wildBase
+
+		// Logic check: StartBattle should have handled appending 'wildMon'
+		// to either cfg.Party or cfg.PC already.
 	}
 
-	fmt.Printf("%s was caught!\n", pokemon.Name)
-	fmt.Println("You may now inspect it with the inspect command.")
+	// 4. Save the entire game state (Party, PC, Inventory, Pokedex)
+	err = saveGame(cfg)
+	if err != nil {
+		return fmt.Errorf("battle finished but failed to save: %w", err)
+	}
 
-	config.CaughtPokemon[name] = pokemon
-	savePokedex(config)
 	return nil
 }
 
@@ -272,6 +388,130 @@ func commandInspect(config *Config, args []string) error {
 		fmt.Printf("  - %s\n", typeInfo.Type.Name)
 	}
 
+	return nil
+}
+
+func commandTeam(cfg *Config, args []string) error {
+	if len(cfg.Party) == 0 {
+		fmt.Println("You have no Pokemon in your team.")
+		return nil
+	}
+	fmt.Println("--- Active Team ---")
+	for i, p := range cfg.Party {
+		// Go now calls p.Status.String() automatically because of the code above
+		fmt.Printf("%d. %-12s | Lvl %d | HP: %d/%d | Status: %s\n",
+			i+1, p.Nickname, p.Level, p.Stats.HP, p.Stats.MaxHP, p.Status)
+
+		// XP Bar visual (optional but cool)
+		fmt.Printf("   XP: %d/%d\n", p.XP, p.NextLevelXP)
+	}
+	return nil
+}
+
+func commandAddTeam(config *Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: addteam <pokemon_name>")
+	}
+	name := args[0]
+
+	baseData, ok := config.CaughtPokemon[name]
+	if !ok {
+		return fmt.Errorf("you haven't caught %s yet", name)
+	}
+
+	if len(config.Party) >= 6 {
+		return fmt.Errorf("your party is full")
+	}
+
+	newMember := game.NewBattlePokemon(baseData, 5)
+	config.Party = append(config.Party, newMember)
+
+	fmt.Printf("%s added to your party!\n", name)
+	return nil
+}
+
+func commandBag(cfg *Config, args []string) error {
+	fmt.Println("--- Inventory ---")
+	fmt.Printf("Pokeballs: %d\n", cfg.Inventory.Pokeballs)
+	fmt.Printf("Potions:   %d\n", cfg.Inventory.Potions)
+	return nil
+}
+
+func commandShop(cfg *Config, args []string) error {
+	shopItems := map[string]int{
+		"pokeball":        10,
+		"greatball":       100,
+		"ultraball":       500,
+		"potion":          300,
+		"superpotion":     700,
+		"revive":          500,
+		"evolution-stone": 500,
+	}
+
+	if len(args) == 0 {
+		fmt.Printf("--- Welcome to the PokeMart! --- (Balance: ₽%d)\n", cfg.Inventory.Money)
+		for item, price := range shopItems {
+			fmt.Printf("- %-12s: ₽%d\n", item, price)
+		}
+		fmt.Println("\nUsage: shop buy <item_name>")
+		return nil
+	}
+
+	if args[0] == "buy" && len(args) == 2 {
+		itemName := strings.ToLower(args[1])
+		price, exists := shopItems[itemName]
+		if !exists {
+			return fmt.Errorf("we don't sell %s here", itemName)
+		}
+
+		if cfg.Inventory.Money < price {
+			return fmt.Errorf("you don't have enough money! (Needs ₽%d)", price)
+		}
+
+		// Deduct money and add item
+		cfg.Inventory.Money -= price
+		switch itemName {
+		case "pokeball":
+			cfg.Inventory.Pokeballs++
+		case "greatball":
+			cfg.Inventory.Greatballs++
+		case "ultraball":
+			cfg.Inventory.Ultraballs++
+		case "potion":
+			cfg.Inventory.Potions++
+		case "superpotion":
+			cfg.Inventory.SuperPotions++
+		}
+
+		fmt.Printf("Purchased %s! New balance: ₽%d\n", itemName, cfg.Inventory.Money)
+		saveGame(cfg)
+		return nil
+	}
+
+	return fmt.Errorf("invalid shop command")
+}
+
+func commandBattle(config *Config, args []string) error {
+	if len(config.Party) == 0 {
+		return fmt.Errorf("you have no Pokemon in your party! Use 'addteam <name>' first")
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("usage: battle <pokemon_name>")
+	}
+
+	enemyName := args[0]
+	fmt.Printf("A wild %s appeared!\n", enemyName)
+
+	enemyBase, err := config.Pokeapi.GetPokemon(enemyName)
+	if err != nil {
+		return err
+	}
+
+	enemyLevel := rand.Intn(5) + 1
+	wildPokemon := game.NewBattlePokemon(enemyBase, enemyLevel)
+
+	game.StartBattle(config.Party, wildPokemon, &config.Inventory)
+	saveGame(config)
 	return nil
 }
 
@@ -335,6 +575,26 @@ func getCommands() map[string]cliCommand {
 			name:        "right",
 			description: "Shortcut for map (next areas)",
 			callback:    commandRight,
+		},
+		"team": {
+			name:        "team",
+			description: "Display your pokemon team",
+			callback:    commandTeam,
+		},
+		"addteam": {
+			name:        "addteam",
+			description: "Add a pokemon to your team",
+			callback:    commandAddTeam,
+		},
+		"bag": {
+			name:        "bag",
+			description: "Shows your items in your bag",
+			callback:    commandBag,
+		},
+		"battle": {
+			name:        "battle",
+			description: "Start a pokemon battle",
+			callback:    commandBattle,
 		},
 		"exit": {
 			name:        "exit",
