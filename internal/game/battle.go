@@ -110,6 +110,10 @@ func StartBattle(party []*BattlePokemon, wildPokemon *BattlePokemon, inventory *
 }
 
 func performMove(attacker, defender *BattlePokemon, move *Move) {
+	move.CurrentPP--
+	if move.CurrentPP < 0 {
+		move.CurrentPP = 0
+	}
 	fmt.Printf("%s used %s!\n", attacker.Nickname, move.Name)
 
 	// Accuracy Check

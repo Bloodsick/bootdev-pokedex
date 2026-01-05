@@ -615,15 +615,18 @@ func commandEvolve(cfg *Config, args []string) error {
 
 func commandShop(cfg *Config, args []string) error {
 	shopItems := map[string]int{
-		"pokeball":    10,
-		"greatball":   100,
-		"ultraball":   500,
-		"potion":      300,
-		"superpotion": 700,
-		"revive":      500,
-		"fire-stone":  700,
-		"water-stone": 700,
-		"leaf-stone":  700,
+		"pokeball":      10,
+		"greatball":     100,
+		"ultraball":     500,
+		"potion":        300,
+		"superpotion":   700,
+		"revive":        500,
+		"fire-stone":    700,
+		"water-stone":   700,
+		"leaf-stone":    700,
+		"thunder-stone": 700,
+		"moon-stone":    700,
+		"sun-stone":     700,
 	}
 
 	if len(args) == 0 {
@@ -659,7 +662,7 @@ func commandShop(cfg *Config, args []string) error {
 			cfg.Inventory.Potions++
 		case "superpotion":
 			cfg.Inventory.SuperPotions++
-		case "fire-stone", "water-stone", "leaf-stone":
+		case "fire-stone", "water-stone", "leaf-stone", "thunder-stone", "moon-stone", "sun-stone":
 			if cfg.Inventory.EvolutionStones == nil {
 				cfg.Inventory.EvolutionStones = make(map[string]int)
 			}
